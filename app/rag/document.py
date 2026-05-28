@@ -201,3 +201,123 @@ def list_indexed_documents() -> list[str]:
     # 更新缓存
     _doc_list_cache = {"data": result, "timestamp": now}
     return result
+
+
+def delete_document(filename: str) -> dict:
+    """
+    从知识库中删除指定文档的索引和文件
+
+    Args:
+        filename: 文档文件名
+
+    Returns:
+        dict: 删除结果
+    """
+    vector_store = get_vector_store()
+    try:
+        collection = vector_store._collection
+        # 删除该文档的所有分块
+        collection.delete(where={"source_file": filename})
+    except Exception as e:
+        return {"status": "error", "message": f"删除索引失败: {str(e)}"}
+
+    # 删除源文件
+    file_path = os.path.join(settings.DOCUMENTS_DIR, filename)
+    if os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+        except Exception as e:
+            return {"status": "warning", "message": f"索引已删除，但文件删除失败: {str(e)}"}
+
+    # 失效缓存
+    _invalidate_doc_list_cache()
+
+    return {"status": "success", "message": f"文档 {filename} 已从知识库中删除"}
+
+
+def update_document(file_path: str, filename: str = None) -> dict:
+    """
+    更新文档索引（先删旧索引，再重新索引）
+    优化版：使用 delete + index_document 组合，确保去重
+
+    Args:
+        file_path: 文档路径
+        filename: 文档名
+
+    Returns:
+        dict: 更新结果
+    """
+    if filename is None:
+        filename = os.path.basename(file_path)
+
+    # index_document 内部已实现先删旧索引再重建的逻辑
+    return index_document(file_path, filename)
+
+
+def get_document_content(filename: str) -> dict:
+    """
+    获取指定文档的文本内容
+
+    Args:
+        filename: 文档文件名
+
+    Returns:
+        dict: 包含文档内容的字典
+    """
+    file_path = os.path.join(settings.DOCUMENTS_DIR, filename)
+    if not os.path.exists(file_path):
+        # 也尝试直接用filename作为路径
+        if os.path.exists(filename):
+            file_path = filename
+        else:
+            return {"status": "error", "message": f"文件不存在: {filename}"}
+
+    try:
+        content = read_document_content(file_path)
+        return {"status": "success", "content": content, "filename": filename}
+    except Exception as e:
+        return {"status": "error", "message": f"读取文档失败: {str(e)}"}
+
+
+def export_document_as_docx(content: str, output_filename: str = None) -> dict:
+    """
+    将文本内容导出为DOCX格式文件
+
+    Args:
+        content: 文档文本内容
+        output_filename: 输出文件名
+
+    Returns:
+        dict: 导出结果，包含下载路径
+    """
+    if output_filename is None:
+        output_filename = "exported_document.docx"
+
+    static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+    export_dir = os.path.join(static_dir, "modified")
+    os.makedirs(export_dir, exist_ok=True)
+    output_path = os.path.join(export_dir, output_filename)
+
+    try:
+        try:
+            from docx import Document
+            doc = Document()
+            paragraphs = content.split("\n")
+            for p_text in paragraphs:
+                doc.add_paragraph(p_text)
+            doc.save(output_path)
+        except ImportError:
+            # 没有python-docx就保存为txt
+            output_filename = output_filename.replace(".docx", ".txt")
+            output_path = os.path.join(export_dir, output_filename)
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(content)
+
+        return {
+            "status": "success",
+            "message": f"文档导出成功",
+            "download_url": f"/static/modified/{output_filename}",
+            "filename": output_filename,
+        }
+    except Exception as e:
+        return {"status": "error", "message": f"导出文档失败: {str(e)}"}
